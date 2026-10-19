@@ -1,0 +1,52 @@
+# Copy to jscope.yml and pass with --config.
+
+analyzers:
+  enabled:
+    - framework_detector
+    - endpoint_analyzer
+    - secret_analyzer
+    - router_analyzer
+    - auth_analyzer
+    - authorization_analyzer
+    - storage_analyzer
+    - graphql_analyzer
+    - service_worker_analyzer
+    - source_map_analyzer
+    - html_analyzer              # Phase 4
+    - openapi_analyzer
+    - graphql_schema_analyzer
+    - wasm_analyzer
+
+artifacts:
+  enabled: true                  # detect HTML / .vue / OpenAPI / GraphQL schema / .wasm next to the JS
+
+runtime:                         # only used by `jscope confirm`
+  rate_per_second: 2
+  max_requests: 100
+  timeout_seconds: 8
+
+min_confidence: LOW      # CONFIRMED | HIGH | MEDIUM | LOW | INFORMATIONAL
+
+output:
+  format: human           # human | json
+  verbose: false
+
+concurrency: 4
+
+exclude:
+  - "**/node_modules/**"
+
+max_file_bytes: 5242880   # 5MB per-file cap; larger files are skipped, not hung on
+
+source_maps:
+  expand: false           # true = analyze original sources recovered from on-disk .map files
+
+plugins:
+  paths: []               # directories/files of analyzer plugins
+  verified: []            # plugin analyzer names you have reviewed and trust
+  community_confidence_cap: MEDIUM
+  entry_points: true
+
+ai:
+  enabled: false
+  provider: null          # Phase 3: AI explains/prioritizes, never invents findings

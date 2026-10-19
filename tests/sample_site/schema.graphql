@@ -1,0 +1,4 @@
+type Query { me: User  user(id: ID!): User  health: String }
+type Mutation { updateProfile(input: ProfileInput!): User  deleteUser(id: ID!): Boolean  setRole(userId: ID!, role: String!): User }
+type User { id: ID! name: String }
+input ProfileInput { name: String }

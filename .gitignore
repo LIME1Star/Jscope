@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
+
+# JScope runtime output / workspaces (may contain sensitive evidence snippets)
+jscope-out/
+jscope_project/
+.jscope/
+jscope.yml
+benchmark-report.json
+*.sarif
+f.json

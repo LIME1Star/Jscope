@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+  <title>Acme Shop</title>
+  <base href="https://shop.acme.com/">
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'">
+  <script src="https://cdn.thirdparty.io/widget.js"></script>
+  <script src="static/client.js"></script>
+</head>
+<body>
+  <!-- TODO remove: legacy panel lives at /admin/legacy-panel -->
+  <form method="post" action="/v1/account/avatar" enctype="multipart/form-data">
+    <input type="file" name="avatar">
+  </form>
+  <form method="post" action="/session">
+    <input type="password" name="pw"><input type="hidden" name="csrf_token" value="x">
+  </form>
+  <script>
+    const API = '/v1';
+    fetch(API + '/orders/recent');
+    axios.post('/v1/reports/internal-metrics', {});
+  </script>
+</body>
+</html>
