@@ -17,6 +17,18 @@ from jscope.core.evidence import Finding
 from jscope.core.graph import KnowledgeGraph
 from jscope import __version__
 from jscope.pipeline import run_analysis
+
+from jscope import terminal
+
+
+def _run_analysis(paths, config, label="Analyzing source files"):
+    """Add terminal presentation while retaining the existing analysis engine."""
+    if sys.stderr.isatty():
+        terminal.banner()
+    with terminal.activity(label):
+        return run_analysis(paths, config)
+
+
 from jscope.reporting import human, json_report
 
 
@@ -57,7 +69,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         config.data["source_maps"]["expand"] = True
     for pth in args.plugin_path or []:
         config.data["plugins"]["paths"].append(pth)
-    res = run_analysis(args.paths, config)
+    res = _run_analysis(args.paths, config)
 
     if res.file_count == 0:
         print("no analyzable files (JavaScript, HTML, OpenAPI, GraphQL schema, WASM) found at given path(s)", file=sys.stderr)
@@ -159,7 +171,7 @@ def cmd_go(args: argparse.Namespace) -> int:
 
     if local_path.exists():
         print(f"-> local path: {local_path}", file=sys.stderr)
-        res = run_analysis([str(local_path)], config)
+        res = _run_analysis([str(local_path)], config)
         if res.file_count == 0:
             print("no analyzable files (JavaScript, HTML, OpenAPI, GraphQL schema, WASM) found at that path", file=sys.stderr)
             return 1
@@ -200,7 +212,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         failed = [r for r in results if not r.ok]
         print(f"      saved {ok} file(s)" + (f", {len(failed)} failed (run `jscope download {url_list} --out <dir>` to see why)" if failed else ""), file=sys.stderr)
         print("[3/3] analyzing ...", file=sys.stderr)
-        res = run_analysis([str(site_dir)], config)
+        res = _run_analysis([str(site_dir)], config)
         if res.file_count == 0:
             print("downloaded files contained nothing analyzable", file=sys.stderr)
             return 1
@@ -415,7 +427,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             config.data["min_confidence"] = args.min_confidence
         if args.format:
             config.data["output"]["format"] = args.format
-        res = run_analysis([str(root)], config)
+        res = _run_analysis([str(root)], config)
         if res.file_count == 0:
             print("downloaded files contained nothing analyzable", file=sys.stderr)
             return 1
@@ -442,7 +454,7 @@ def cmd_graph(args: argparse.Namespace) -> int:
         graph = KnowledgeGraph.from_dict(data["graph"])
     else:
         config = Config.load(args.config)
-        res = run_analysis([args.source], config)
+        res = _run_analysis([args.source], config)
         graph = res.graph
     chains = graph.route_chains()
     if args.format == "json":
