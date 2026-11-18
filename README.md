@@ -1,4 +1,3 @@
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
@@ -12,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LIME1Star/JScope/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/LIME1Star/JScope/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/LIME1Star/Jscope/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/LIME1Star/Jscope/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
 </p>
@@ -56,11 +55,21 @@ Try it yourself on the bundled fixture (`tests/sample_react`).
 ## Install
 
 ```bash
-pip install jscope
-jscope doctor        # checks your install
+python -m pip install --upgrade jscope
+jscope                # opens the guided terminal wizard
 ```
 
-Python 3.10+. For YAML OpenAPI specs: `pip install "jscope[yaml] @ git+https://github.com/LIME1Star/JScope.git"`
+JScope starts with a hawk identity banner and a guided mode selector. **Auto mode** walks through target, assessment profile, review and execution. **Manual mode** lets you run existing JScope commands from an interactive prompt. The original direct CLI remains available:
+
+```bash
+jscope --help
+jscope doctor
+jscope analyze ./path/to/project --verbose
+jscope https://app.example.com
+```
+
+Python 3.10+. For YAML OpenAPI specs: `python -m pip install "jscope[yaml]"`. For development, clone the repository and install `python -m pip install -e ".[dev]"`. See [docs/RELEASING.md](docs/RELEASING.md) for GitHub and PyPI publishing.
+
 ## Quick start
 
 ```bash
@@ -126,7 +135,7 @@ JScope is a **beta development tool, not a production scanner.** Be aware of the
 ## Development
 
 ```bash
-git clone https://github.com/LIME1Star/JScope && cd JScope
+git clone https://github.com/LIME1Star/Jscope && cd JScope
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest

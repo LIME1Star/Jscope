@@ -38,9 +38,9 @@ browser = ["playwright>=1.40"]
 dev = ["pytest>=7", "PyYAML>=6.0", "build", "twine"]
 
 [project.urls]
-Homepage = "https://github.com/LIME1Star/JScope"
-Issues = "https://github.com/LIME1Star/JScope/issues"
-Changelog = "https://github.com/LIME1Star/JScope/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/LIME1Star/Jscope"
+Issues = "https://github.com/LIME1Star/Jscope/issues"
+Changelog = "https://github.com/LIME1Star/Jscope/blob/main/CHANGELOG.md"
 
 [project.scripts]
 jscope = "jscope.cli:main"

@@ -128,14 +128,14 @@ def test_go_respects_out_and_format_overrides(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ go --confirm chains into the prober (dry-run only)
-def test_go_confirm_without_permission_only_plans(tmp_path, monkeypatch, capsys):
+def test_go_confirm_without_active_test_authorization_refuses_to_send(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     srv = make_server()
     try:
         url = f"http://127.0.0.1:{srv.server_port}/"
         rc = main(["go", url, "--yes", "--no-probe", "--confirm", "--allow-private"])
         assert rc == 1                                       # confirm runs, but refuses to send without permission
-        assert "i-have-permission" in capsys.readouterr().err
+        assert "--authorize-active-tests" in capsys.readouterr().err
     finally:
         srv.shutdown()
 
@@ -255,3 +255,23 @@ def test_go_remote_loopback_blocked_by_default(tmp_path, monkeypatch, capsys):
         assert "blocked by scope policy" in capsys.readouterr().err
     finally:
         srv.shutdown()
+
+
+def test_no_args_launches_wizard_and_can_exit(monkeypatch, capsys):
+    from jscope.cli import main
+    answers = iter(["3"])
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
+    assert main([]) == 0
+    captured = capsys.readouterr()
+    assert "Choose a mode" in captured.out
+    assert "JScope closed" in captured.out
+
+
+def test_confirm_exposes_explicit_active_test_authorization():
+    parser = build_parser()
+    args = parser.parse_args(["confirm", "findings.json", "--base-url", "https://example.test", "--authorize-active-tests"])
+    assert args.authorize_active_tests is True
+    help_text = parser._subparsers._group_actions[0].choices["confirm"].format_help()
+    assert "--authorize-active-tests" in help_text

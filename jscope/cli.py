@@ -17,19 +17,8 @@ from jscope.core.evidence import Finding
 from jscope.core.graph import KnowledgeGraph
 from jscope import __version__
 from jscope.pipeline import run_analysis
-
-from jscope import terminal
-
-
-def _run_analysis(paths, config, label="Analyzing source files"):
-    """Add terminal presentation while retaining the existing analysis engine."""
-    if sys.stderr.isatty():
-        terminal.banner()
-    with terminal.activity(label):
-        return run_analysis(paths, config)
-
-
 from jscope.reporting import human, json_report
+from jscope import terminal
 
 
 def _emit(text: str, output: str | None) -> None:
@@ -39,6 +28,12 @@ def _emit(text: str, output: str | None) -> None:
         print(f"[wrote {output}]", file=sys.stderr)
     else:
         print(text)
+
+
+def _run_analysis(paths, config, label: str = "Inspecting JavaScript and related source files"):
+    """Run the existing engine with JScope's terminal activity treatment."""
+    with terminal.activity(label):
+        return run_analysis(paths, config)
 
 
 def _print_report(res, fmt: str, verbose: bool, output: str | None = None):
@@ -171,7 +166,7 @@ def cmd_go(args: argparse.Namespace) -> int:
 
     if local_path.exists():
         print(f"-> local path: {local_path}", file=sys.stderr)
-        res = _run_analysis([str(local_path)], config)
+        res = _run_analysis([str(local_path)], config, "Inspecting local target")
         if res.file_count == 0:
             print("no analyzable files (JavaScript, HTML, OpenAPI, GraphQL schema, WASM) found at that path", file=sys.stderr)
             return 1
@@ -212,7 +207,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         failed = [r for r in results if not r.ok]
         print(f"      saved {ok} file(s)" + (f", {len(failed)} failed (run `jscope download {url_list} --out <dir>` to see why)" if failed else ""), file=sys.stderr)
         print("[3/3] analyzing ...", file=sys.stderr)
-        res = _run_analysis([str(site_dir)], config)
+        res = _run_analysis([str(site_dir)], config, "Analyzing downloaded source")
         if res.file_count == 0:
             print("downloaded files contained nothing analyzable", file=sys.stderr)
             return 1
@@ -240,7 +235,7 @@ def cmd_go(args: argparse.Namespace) -> int:
         if headers is None:
             return 1
         rc, updated = _confirm_core(payload, url, args.allow_host or [host], args.rate, args.max_requests,
-                                    headers, config, dry_run=False, i_have_permission=args.i_have_permission)
+                                    headers, config, dry_run=False, authorize_active_tests=args.authorize_active_tests)
         if rc == 0 and updated:
             with open(findings_path, "w") as f:
                 json.dump(updated, f, indent=2)
@@ -427,7 +422,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             config.data["min_confidence"] = args.min_confidence
         if args.format:
             config.data["output"]["format"] = args.format
-        res = _run_analysis([str(root)], config)
+        res = _run_analysis([str(root)], config, "Analyzing workspace target")
         if res.file_count == 0:
             print("downloaded files contained nothing analyzable", file=sys.stderr)
             return 1
@@ -454,7 +449,7 @@ def cmd_graph(args: argparse.Namespace) -> int:
         graph = KnowledgeGraph.from_dict(data["graph"])
     else:
         config = Config.load(args.config)
-        res = _run_analysis([args.source], config)
+        res = _run_analysis([args.source], config, "Analyzing input source")
         graph = res.graph
     chains = graph.route_chains()
     if args.format == "json":
@@ -809,7 +804,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def _confirm_core(data: dict, base_url: str, allow_hosts: list[str], rate: float | None, max_requests: int | None,
-                  headers: dict, config: Config, dry_run: bool, i_have_permission: bool) -> tuple[int, dict | None]:
+                  headers: dict, config: Config, dry_run: bool, authorize_active_tests: bool) -> tuple[int, dict | None]:
     """Shared by `jscope confirm` and `jscope go --confirm`. Returns (exit_code, updated_payload_or_None)."""
     from jscope.runtime.prober import Prober, ScopeError, apply_results
     findings = [finding_from_dict(m) for m in data["findings"]]
@@ -828,8 +823,8 @@ def _confirm_core(data: dict, base_url: str, allow_hosts: list[str], rate: float
     if dry_run:
         print("[dry run: nothing was sent]", file=sys.stderr)
         return 0, None
-    if not i_have_permission:
-        print("error: refusing to send requests without --i-have-permission (you are authorized to test this host). "
+    if not authorize_active_tests:
+        print("error: refusing to send requests without --authorize-active-tests. "
               "Use --dry-run to review the plan first.", file=sys.stderr)
         return 1, None
     _, results = prober.run(findings)
@@ -991,7 +986,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     if headers is None:
         return 1
     rc, updated = _confirm_core(data, args.base_url, args.allow_host or [], args.rate, args.max_requests,
-                                headers, config, args.dry_run, args.i_have_permission)
+                                headers, config, args.dry_run, args.authorize_active_tests)
     if rc == 0 and updated and args.out:
         with open(args.out, "w") as fh:
             json.dump(updated, fh, indent=2)
@@ -1034,9 +1029,9 @@ def build_parser() -> argparse.ArgumentParser:
     pg2.add_argument("--allow-private", action="store_true", help="permit loopback/private destinations (controlled local testing only)")
     pg2.add_argument("--no-probe", action="store_true", help="skip well-known OpenAPI/GraphQL spec paths (remote targets only)")
     pg2.add_argument("-y", "--yes", action="store_true", help="skip the target-confirmation prompt (required in non-interactive sessions)")
-    pg2.add_argument("--confirm", action="store_true", help="after analyzing, also run opt-in runtime confirmation (still needs --i-have-permission to send)")
+    pg2.add_argument("--confirm", action="store_true", help="after analyzing, run opt-in runtime confirmation (requires --authorize-active-tests to send requests)")
     pg2.add_argument("--allow-host", action="append", help="host(s) allowed for --confirm (default: the target's own host)")
-    pg2.add_argument("--i-have-permission", action="store_true", help="required for --confirm to actually send requests")
+    pg2.add_argument("--authorize-active-tests", action="store_true", help="explicitly authorize the opt-in confirmation requests")
     pg2.add_argument("--header", action="append", help="extra header for --confirm, e.g. 'Cookie: session=...'")
     pg2.add_argument("--rate", type=float, default=None)
     pg2.add_argument("--max-requests", type=int, default=None)
@@ -1114,7 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("findings_file", help="saved with `jscope analyze --save-findings`")
     pk.add_argument("--base-url", required=True, help="origin to test, e.g. https://app.example.com")
     pk.add_argument("--allow-host", action="append", help="host[:port] you are authorized to test (repeatable, required)")
-    pk.add_argument("--i-have-permission", action="store_true", help="required to actually send; confirms you may test the host")
+    pk.add_argument("--authorize-active-tests", action="store_true", help="explicitly authorize the planned confirmation requests")
     pk.add_argument("--dry-run", action="store_true", help="print the request plan and send nothing")
     pk.add_argument("--header", action="append", help="extra request header 'Name: value' (e.g. a session cookie you own)")
     pk.add_argument("--rate", type=float, default=None, help="requests per second (default 2)")
@@ -1241,8 +1236,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, _show_banner: bool = True) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if not argv and sys.stdin.isatty() and sys.stderr.isatty():
+        if _show_banner:
+            terminal.banner()
+        from jscope.wizard import launch_wizard
+        return launch_wizard()
+    if _show_banner and sys.stderr.isatty():
+        terminal.banner()
+    if not argv:
+        argv = ["--help"]
     argv = _rewrite_bare_target(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
