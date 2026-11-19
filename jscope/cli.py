@@ -16,9 +16,9 @@ from jscope.config import Config
 from jscope.core.evidence import Finding
 from jscope.core.graph import KnowledgeGraph
 from jscope import __version__
-from jscope.pipeline import run_analysis
 from jscope.reporting import human, json_report
 from jscope import terminal
+from jscope.session import Session, SessionError, slug as _session_slug
 
 
 def _emit(text: str, output: str | None) -> None:
@@ -32,8 +32,32 @@ def _emit(text: str, output: str | None) -> None:
 
 def _run_analysis(paths, config, label: str = "Inspecting JavaScript and related source files"):
     """Run the existing engine with JScope's terminal activity treatment."""
+    from jscope.pipeline import run_analysis          # lazy: tree-sitter loads only when analysis actually runs
     with terminal.activity(label):
         return run_analysis(paths, config)
+
+
+def _payload_of(res) -> dict:
+    return json_report.payload(res.findings, res.frameworks, res.file_count, res.graph, res.diagnostics,
+                               dataflow=res.dataflow, file_diagnostics=res.file_diagnostics)
+
+
+def _record_session(target: str, findings_path: Path, out_dir: Path | None = None, allow_private: bool | None = None) -> None:
+    """Remember this analysis so follow-up commands (`findings`, `show`, `graph`, `confirm` ...) need no arguments.
+    Failure to write context must never fail the command that produced real results."""
+    try:
+        sess = Session.load()
+        sess.set_target(target, allow_private=allow_private)
+        sess.record_analysis(findings_path, out_dir)
+    except OSError as exc:
+        print(f"note: could not save investigation context ({exc})", file=sys.stderr)
+
+
+def _autosave_findings(res, target: str, explicit: str | None) -> Path:
+    path = Path(explicit) if explicit else Path(Session.load().root) / ".jscope" / "findings" / f"{_session_slug(target)}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_payload_of(res), indent=2), encoding="utf-8")
+    return path
 
 
 def _print_report(res, fmt: str, verbose: bool, output: str | None = None):
@@ -71,14 +95,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         return 1
 
     _print_report(res, config.get("output.format", "human"), args.verbose, args.output)
-
+    saved = _autosave_findings(res, args.paths[0], args.save_findings)
+    _record_session(args.paths[0], saved)
     if args.save_findings:
-        with open(args.save_findings, "w") as f:
-            json.dump(json_report.payload(res.findings, res.frameworks, res.file_count, res.graph,
-                                          res.diagnostics, dataflow=res.dataflow,
-                                          file_diagnostics=res.file_diagnostics), f, indent=2)
         print(f"\n[saved findings -> {args.save_findings}]", file=sys.stderr)
-
+    print("next: jscope findings | jscope show 1 | jscope graph", file=sys.stderr)
     return 0
 
 
@@ -95,9 +116,8 @@ def _ext_for(fmt: str) -> str:
 
 
 def _confirm_target(url: str, yes: bool) -> bool:
-    """One-line banner + a single Enter press before any request leaves the machine. `-y` skips it;
-    a non-interactive session without `-y` is refused rather than silently sent (this is the direct fix for
-    'my $VAR was empty/wrong and it scanned the wrong host without telling me')."""
+    """Show what is about to be contacted (host + resolved IP). Interactive sessions proceed immediately; a
+    non-interactive session without `-y` is refused rather than silently sent (guards against an empty $VAR)."""
     host = urlparse(url).netloc or url
     try:
         ip = socket.gethostbyname(host.split(":")[0])
@@ -106,18 +126,11 @@ def _confirm_target(url: str, yes: bool) -> bool:
         resolved = "could NOT be resolved -- double check the hostname before continuing"
     print(f"\n  target : {url}", file=sys.stderr)
     print(f"  host   : {host}  ({resolved})", file=sys.stderr)
-    print("  action : discover + download + analyze (read-only GET requests only; no probing without --confirm)\n", file=sys.stderr)
-    if yes:
-        return True
-    if not sys.stdin.isatty():
-        print("error: not an interactive terminal -- re-run with -y/--yes to proceed without the prompt", file=sys.stderr)
-        return False
-    try:
-        input("  press Enter to continue, Ctrl+C to abort... ")
-    except (EOFError, KeyboardInterrupt):
-        print("\naborted", file=sys.stderr)
-        return False
-    return True
+    print("  action : discover + download + analyze (read-only GET requests; runtime checks only if you ask)\n", file=sys.stderr)
+    if yes or sys.stdin.isatty():
+        return True                      # an interactive user typed this target; scope is enforced by the transport policy
+    print("error: not an interactive terminal -- re-run with -y/--yes to proceed (guards against an empty $VAR scanning the wrong host)", file=sys.stderr)
+    return False
 
 
 def _print_synopsis(res, out_dir: Path, report_path: Path, findings_path: Path, site_dir: Path | None) -> None:
@@ -138,7 +151,7 @@ def _print_synopsis(res, out_dir: Path, report_path: Path, findings_path: Path, 
     print(f"findings  : {findings_path}")
     if site_dir:
         print(f"downloaded: {site_dir}")
-    print(f"\n(all output is under {out_dir}; full report: jscope report {findings_path} --format html)")
+    print(f"\nnext: jscope findings | jscope show 1 | jscope graph | jscope report --format html")
 
 
 def _target_policy(url: str, prefix: str, allow_private: bool = False):
@@ -221,6 +234,7 @@ def cmd_go(args: argparse.Namespace) -> int:
                             dataflow=res.dataflow, file_diagnostics=res.file_diagnostics)
     with open(findings_path, "w") as f:
         json.dump(payload, f, indent=2)
+    _record_session(target, findings_path, out_dir, allow_private=bool(getattr(args, "allow_private", False)))
     _print_synopsis(res, out_dir, report_path, findings_path, site_dir)
 
     if args.confirm:
@@ -306,31 +320,12 @@ def finding_from_dict(match: dict) -> Finding:
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    if not args.findings_file:
-        print("error: --findings-file is required (produced via `jscope analyze --save-findings`)",
-              file=sys.stderr)
-        return 1
-    with open(args.findings_file) as f:
-        data = json.load(f)
-    match = next((fnd for fnd in data["findings"] if fnd["id"] == args.finding_id), None)
-    if match is None:
-        print(f"no finding with id {args.finding_id}", file=sys.stderr)
-        return 1
-
-    from jscope.core.evidence import Evidence, EvidenceType, Confidence
-    finding = Finding(
-        id=match["id"], category=match["category"], subject=match["subject"],
-        confidence=Confidence(match["confidence"]), score=match["score"],
-        evidence=[Evidence(type=EvidenceType(e["type"]), description=e["description"],
-                            analyzer=e["analyzer"], file=e["file"], line=e["line"],
-                            snippet=e["snippet"], metadata=e["metadata"])
-                  for e in match["evidence"]],
-        contributing_analyzers=match["contributing_analyzers"],
-        attack_surface=match["attack_surface"], suggested_test=match["suggested_test"],
-        reasoning=match["reasoning"], related=match["related"], metadata=match.get("metadata", {}),
-    )
-    print(human.render_explain(finding))
-    return 0
+    """Kept for compatibility: `explain <id>` is `show <id> --full`."""
+    args.ref = args.finding_id
+    args.full = True
+    args.source = False
+    args.json = False
+    return cmd_show(args)
 
 
 def cmd_download(args: argparse.Namespace) -> int:
@@ -440,7 +435,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_graph(args: argparse.Namespace) -> int:
     """Print the route -> component -> API -> guard/role map."""
-    if args.source.endswith(".json"):
+    if args.source is None:
+        data, _s, _p = _context_payload(None)
+        if data is None:
+            return 1
+        graph = KnowledgeGraph.from_dict(data["graph"]) if "graph" in data else None
+        if graph is None:
+            print("findings file has no graph (re-run the analysis)", file=sys.stderr)
+            return 1
+    elif args.source.endswith(".json"):
         with open(args.source) as f:
             data = json.load(f)
         if "graph" not in data:
@@ -452,6 +455,11 @@ def cmd_graph(args: argparse.Namespace) -> int:
         res = _run_analysis([args.source], config, "Analyzing input source")
         graph = res.graph
     chains = graph.route_chains()
+    if getattr(args, "unprotected", False):
+        chains = [c for c in chains if c["unguarded"]]
+    if getattr(args, "filter", None):
+        q = args.filter.lower()
+        chains = [c for c in chains if q in c["route"].lower() or any(q in e.lower() for e in c["endpoints"])]
     if args.format == "json":
         print(json.dumps({"stats": graph.stats(), "routes": chains}, indent=2))
         return 0
@@ -504,9 +512,8 @@ def _ws(args):
 
 
 def _ws_cmd(fn):
-    from jscope.workspace.store import WorkspaceError
-
     def wrapper(args):
+        from jscope.workspace.common import WorkspaceError      # lazy: workspace.store pulls in the analysis engine
         try:
             return fn(args)
         except WorkspaceError as exc:
@@ -783,9 +790,14 @@ def _load_payload(source: str, workspace: str, scan: str) -> dict:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Report Mode (PRD section 6): re-render any saved analysis without re-analyzing."""
-    from jscope.workspace.store import WorkspaceError
+    from jscope.workspace.common import WorkspaceError
     try:
-        data = _load_payload(args.source, args.workspace, args.scan)
+        if args.source is None:
+            data, _s, _p = _context_payload(None)
+            if data is None:
+                return 1
+        else:
+            data = _load_payload(args.source, args.workspace, args.scan)
     except (WorkspaceError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -888,12 +900,31 @@ def _verify_core(data: dict, base_url: str, allow_hosts: list[str], identities: 
     return 0, data
 
 
+def _resolve_ids(refs: list[str] | None, data: dict) -> list[str] | None:
+    """--finding-id accepts ids or ranks (`3`, `#3`) as shown by `jscope findings`."""
+    if not refs:
+        return None
+    from jscope import investigate
+    rows = investigate.ranked(data)
+    out = []
+    for r in refs:
+        try:
+            out.append(investigate.resolve(rows, r)["id"])
+        except investigate.LookupError_:
+            out.append(r)                # unknown refs fall through to the old exact-id behaviour (matches nothing)
+    return out
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """FR-04: attempt to reproduce selected candidate vulnerabilities. Requires --authorize-active-tests."""
     from jscope.verify.engine import TestIdentity
     config = Config.load(args.config)
-    with open(args.findings_file) as f:
-        data = json.load(f)
+    data, sess, path = _context_payload(args.findings_file)
+    if data is None:
+        return 1
+    base_url, allow = _runtime_scope(args, sess)
+    if base_url is None:
+        return 1
     identities = []
     for spec in args.identity or []:
         if "=" not in spec:
@@ -915,12 +946,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
     for ident in identities:
         if ident.name in role_map:
             ident.role = role_map[ident.name]
-    rc, updated = _verify_core(data, args.base_url, args.allow_host or [], identities, args.authorize_active_tests,
-                               args.category, args.finding_id, config, args.allow_private)
-    if rc == 0 and updated and args.out:
-        with open(args.out, "w") as fh:
-            json.dump(updated, fh, indent=2)
-        print(f"[wrote {args.out}]", file=sys.stderr)
+    rc, updated = _verify_core(data, base_url, allow, identities, args.authorize_active_tests,
+                               args.category, _resolve_ids(args.finding_id, data), config, args.allow_private or sess.allow_private)
+    if rc == 0 and updated:
+        if args.out:
+            with open(args.out, "w") as fh:
+                json.dump(updated, fh, indent=2)
+            print(f"[wrote {args.out}]", file=sys.stderr)
+        elif not args.findings_file and args.authorize_active_tests:
+            _write_back(path, updated)
     return rc
 
 
@@ -977,21 +1011,131 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     return 1 if (fail and args.strict) else 0
 
 
+def _runtime_scope(args, sess) -> tuple[str | None, list[str]]:
+    """Runtime target + allowed hosts. Defaults come from the investigation's own target host only; an explicit
+    --base-url keeps the original rule that every host must be named with --allow-host."""
+    if args.base_url:
+        return args.base_url, list(args.allow_host or [])
+    if sess.base_url and sess.host:
+        return sess.base_url, list(args.allow_host or [sess.host])
+    print("error: no runtime target -- pass --base-url, or analyze a URL target first (`jscope <url>`)", file=sys.stderr)
+    return None, []
+
+
 def cmd_confirm(args: argparse.Namespace) -> int:
     """Opt-in runtime confirmation: safe methods only, allow-listed hosts only. See docs/RUNTIME.md."""
     config = Config.load(args.config)
-    with open(args.findings_file) as f:
-        data = json.load(f)
+    data, sess, path = _context_payload(args.findings_file)
+    if data is None:
+        return 1
+    base_url, allow = _runtime_scope(args, sess)
+    if base_url is None:
+        return 1
     headers = _parse_headers(args.header)
     if headers is None:
         return 1
-    rc, updated = _confirm_core(data, args.base_url, args.allow_host or [], args.rate, args.max_requests,
+    rc, updated = _confirm_core(data, base_url, allow, args.rate, args.max_requests,
                                 headers, config, args.dry_run, args.authorize_active_tests)
-    if rc == 0 and updated and args.out:
-        with open(args.out, "w") as fh:
-            json.dump(updated, fh, indent=2)
-        print(f"[wrote {args.out}; {updated['runtime']['requests_sent']} request(s) sent]", file=sys.stderr)
+    if rc == 0 and updated:
+        if args.out:
+            with open(args.out, "w") as fh:
+                json.dump(updated, fh, indent=2)
+            print(f"[wrote {args.out}; {updated['runtime']['requests_sent']} request(s) sent]", file=sys.stderr)
+        elif not args.findings_file:
+            _write_back(path, updated)
     return rc
+
+
+
+# ---------------------------------------------------------------- investigation context commands (0.6)
+def _context_payload(findings_file: str | None):
+    """(payload, session, path). Explicit file wins; otherwise the current investigation's findings."""
+    from jscope import investigate
+    sess = Session.load()
+    try:
+        path = Path(findings_file) if findings_file else sess.require_findings()
+        return investigate.load_payload(path), sess, path
+    except (SessionError, investigate.LookupError_) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None, sess, None
+
+
+def _write_back(path: Path, data: dict) -> None:
+    """Runtime results are added to the findings file the investigation already uses. The pristine static
+    result is kept once as <name>.static.json so the original evidence is never lost."""
+    backup = path.with_name(path.stem + ".static.json")
+    if not backup.exists():
+        backup.write_bytes(path.read_bytes())
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"[updated {path}; static original kept as {backup.name}]", file=sys.stderr)
+
+
+def cmd_use(args: argparse.Namespace) -> int:
+    """Set the current target without any network traffic or analysis."""
+    sess = Session.load()
+    sess.set_target(args.target, allow_private=True if args.allow_private else None)
+    sess.save()
+    print(f"target: {sess.target}" + (f"  (scope: {sess.host})" if sess.host else ""))
+    print(f"next: jscope {sess.target}" if not sess.findings_file else "next: jscope findings")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    from jscope import investigate
+    sess = Session.load()
+    data = None
+    if sess.findings_file and Path(sess.findings_file).is_file():
+        try:
+            data = investigate.load_payload(sess.findings_file)
+        except investigate.LookupError_ as exc:
+            print(f"warning: {exc}", file=sys.stderr)
+    if args.json:
+        print(json.dumps({"target": sess.target or None, "kind": sess.kind or None, "scope_host": sess.host,
+                          "findings_file": sess.findings_file, "summary": investigate.summary(data) if data else None}, indent=2))
+        return 0
+    print(investigate.render_status(sess, data))
+    return 0
+
+
+def cmd_findings(args: argparse.Namespace) -> int:
+    from jscope import investigate
+    data, sess, _ = _context_payload(args.findings_file)
+    if data is None:
+        return 1
+    rows = investigate.ranked(data)
+    sel = investigate.filter_ranked(rows, min_confidence=args.min_confidence, category=args.category,
+                                    unverified=args.unverified, query=args.query)
+    if args.json:
+        print(json.dumps([{k: v for k, v in r.items() if k != "finding"} for r in sel], indent=2))
+        return 0
+    default_cut = not (args.all or args.limit or args.min_confidence or args.category or args.query or args.unverified)
+    limit = None if args.all else (args.limit or (15 if default_cut else None))
+    print(investigate.render_list(sel, len(rows), limit))
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    from jscope import investigate
+    data, sess, _ = _context_payload(getattr(args, "findings_file", None))
+    if data is None:
+        return 1
+    rows = investigate.ranked(data)
+    try:
+        row = investigate.resolve(rows, args.ref)
+    except investigate.LookupError_ as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if exc.candidates:
+            print(investigate.render_list(exc.candidates, len(rows), None), file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps({k: v for k, v in row.items()}, indent=2))
+        return 0
+    if getattr(args, "full", False):
+        print(human.render_explain(finding_from_dict(row["finding"])))
+        return 0
+    print(investigate.render_show(row, data, rows, has_base_url=bool(sess.base_url),
+                                  context_lines=getattr(args, "source", False)))
+    return 0
 
 
 # Every subcommand name the parser below registers. Used to decide whether a bare `jscope <arg>` should be
@@ -999,7 +1143,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
 # before argparse runs at all; test_cli_entry.py asserts it stays in sync with the real subparser list.
 KNOWN_COMMANDS = {
     "analyze", "explain", "report", "confirm", "verify", "observe", "benchmark", "graph", "plugins", "plugin-new", "download", "crawl", "scan",
-    "go", "doctor", "new", "scope-check", "assessment-plan", "scope-discover", "scope-review", "scope-approve", "ws-init", "ws-add", "ws-remove", "ws-list", "ws-scan", "ws-history", "ws-diff", "ws-summary", "ai",
+    "go", "doctor", "use", "status", "findings", "show", "new", "scope-check", "assessment-plan", "scope-discover", "scope-review", "scope-approve", "ws-init", "ws-add", "ws-remove", "ws-list", "ws-scan", "ws-history", "ws-diff", "ws-summary", "ai",
 }
 
 
@@ -1038,6 +1182,34 @@ def build_parser() -> argparse.ArgumentParser:
     pg2.add_argument("--verbose", action="store_true")
     pg2.add_argument("--config", default=None)
     pg2.set_defaults(func=cmd_go)
+
+    pus = sub.add_parser("use", help="set the current target (no network traffic, no analysis)")
+    pus.add_argument("target", help="URL/host or local path")
+    pus.add_argument("--allow-private", action="store_true", help="permit loopback/private destinations for this investigation")
+    pus.set_defaults(func=cmd_use)
+
+    pst = sub.add_parser("status", help="show the current investigation: target, scope, findings, evidence state")
+    pst.add_argument("--json", action="store_true")
+    pst.set_defaults(func=cmd_status)
+
+    pfi = sub.add_parser("findings", help="ranked findings for the current investigation ('where to start')")
+    pfi.add_argument("query", nargs="?", default=None, help="only findings whose subject/category/id contains this text")
+    pfi.add_argument("--findings-file", default=None)
+    pfi.add_argument("--category", default=None)
+    pfi.add_argument("--min-confidence", choices=["CONFIRMED", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"], default=None)
+    pfi.add_argument("--unverified", action="store_true", help="only findings with no runtime verification")
+    pfi.add_argument("--limit", type=int, default=None)
+    pfi.add_argument("--all", action="store_true")
+    pfi.add_argument("--json", action="store_true")
+    pfi.set_defaults(func=cmd_findings)
+
+    psw = sub.add_parser("show", help="one finding: evidence, route context, related findings, next actions")
+    psw.add_argument("ref", help="rank (3 or #3), id (JS-0004), or text unique to its subject")
+    psw.add_argument("--findings-file", default=None)
+    psw.add_argument("--full", action="store_true", help="complete evidence chain and data-flow path")
+    psw.add_argument("--source", action="store_true", help="include source lines around each evidence location")
+    psw.add_argument("--json", action="store_true")
+    psw.set_defaults(func=cmd_show)
 
     pnw = sub.add_parser("new", help="create a domain-centric workspace (no network traffic)")
     pnw.add_argument("target", help="root DNS domain, e.g. example.com")
@@ -1092,13 +1264,13 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--plugin-path", action="append", help="directory or file of analyzer plugins (repeatable)")
     pa.set_defaults(func=cmd_analyze)
 
-    pe = sub.add_parser("explain", help="show full evidence chain for one finding")
+    pe = sub.add_parser("explain", help="alias of `show <id> --full`")
     pe.add_argument("finding_id")
-    pe.add_argument("--findings-file", required=True)
+    pe.add_argument("--findings-file", default=None, help="default: the current investigation's findings")
     pe.set_defaults(func=cmd_explain)
 
     pr = sub.add_parser("report", help="re-render a saved analysis as human/json/markdown/html/sarif (no re-analysis)")
-    pr.add_argument("source", help="findings .json, or ws:<target> for a workspace scan")
+    pr.add_argument("source", nargs="?", default=None, help="findings .json, or ws:<target> (default: current investigation)")
     pr.add_argument("--format", choices=["human", "json", "markdown", "html", "sarif"], default="markdown")
     pr.add_argument("--output", "-o", default=None)
     pr.add_argument("--workspace", default="."); pr.add_argument("--scan", default="latest")
@@ -1106,8 +1278,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_report)
 
     pk = sub.add_parser("confirm", help="OPT-IN: probe endpoint findings with safe methods to confirm they respond (docs/RUNTIME.md)")
-    pk.add_argument("findings_file", help="saved with `jscope analyze --save-findings`")
-    pk.add_argument("--base-url", required=True, help="origin to test, e.g. https://app.example.com")
+    pk.add_argument("findings_file", nargs="?", default=None, help="default: the current investigation's findings")
+    pk.add_argument("--base-url", default=None, help="origin to test (default: the current investigation's target)")
     pk.add_argument("--allow-host", action="append", help="host[:port] you are authorized to test (repeatable, required)")
     pk.add_argument("--authorize-active-tests", action="store_true", help="explicitly authorize the planned confirmation requests")
     pk.add_argument("--dry-run", action="store_true", help="print the request plan and send nothing")
@@ -1119,13 +1291,13 @@ def build_parser() -> argparse.ArgumentParser:
     pk.set_defaults(func=cmd_confirm)
 
     pv = sub.add_parser("verify", help="OPT-IN: attempt to reproduce candidate vulnerabilities (FR-04, docs/VERIFICATION.md)")
-    pv.add_argument("findings_file", help="saved with `jscope analyze --save-findings`")
-    pv.add_argument("--base-url", required=True, help="origin to test, e.g. https://app.example.com")
+    pv.add_argument("findings_file", nargs="?", default=None, help="default: the current investigation's findings")
+    pv.add_argument("--base-url", default=None, help="origin to test (default: the current investigation's target)")
     pv.add_argument("--allow-host", action="append", help="host[:port] you are authorized to test (repeatable, required)")
     pv.add_argument("--authorize-active-tests", action="store_true", help="required to actually run tests; confirms you may test the host")
     pv.add_argument("--allow-private", action="store_true", help="permit loopback/private destinations (controlled local test)")
     pv.add_argument("--category", default=None, help="only verify findings in this category (e.g. dataflow, idor)")
-    pv.add_argument("--finding-id", action="append", dest="finding_id", default=None, help="only verify this finding id (repeatable)")
+    pv.add_argument("--finding-id", action="append", dest="finding_id", default=None, help="only verify this finding (id or rank from `jscope findings`; repeatable)")
     pv.add_argument("--identity", action="append", help="test identity NAME=Header:value,Header2:value2 (repeatable; need >=2 for authz checks)")
     pv.add_argument("--identity-role", action="append", default=None, help="NAME=role for an --identity (e.g. admin=admin)")
     pv.add_argument("--out", default=None, help="write the updated findings JSON (with verification metadata) here")
@@ -1153,7 +1325,9 @@ def build_parser() -> argparse.ArgumentParser:
     pb.set_defaults(func=cmd_benchmark)
 
     pg = sub.add_parser("graph", help="print the route -> component -> API -> guard map")
-    pg.add_argument("source", help="a path to analyze, or a findings .json saved with --save-findings")
+    pg.add_argument("source", nargs="?", default=None, help="a path to analyze, or a findings .json (default: current investigation)")
+    pg.add_argument("--unprotected", action="store_true", help="only routes without a guard")
+    pg.add_argument("--filter", default=None, help="only routes/endpoints containing this text")
     pg.add_argument("--config", default=None)
     pg.add_argument("--format", choices=["human", "json"], default="human")
     pg.set_defaults(func=cmd_graph)
@@ -1238,13 +1412,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, _show_banner: bool = True) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
-    if not argv and sys.stdin.isatty() and sys.stderr.isatty():
-        if _show_banner:
-            terminal.banner()
-        from jscope.wizard import launch_wizard
-        return launch_wizard()
-    if _show_banner and sys.stderr.isatty():
-        terminal.banner()
+    if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+        from jscope.shell import run_shell
+        return run_shell()
     if not argv:
         argv = ["--help"]
     argv = _rewrite_bare_target(argv)

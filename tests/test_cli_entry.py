@@ -257,16 +257,14 @@ def test_go_remote_loopback_blocked_by_default(tmp_path, monkeypatch, capsys):
         srv.shutdown()
 
 
-def test_no_args_launches_wizard_and_can_exit(monkeypatch, capsys):
-    from jscope.cli import main
-    answers = iter(["3"])
+def test_no_args_launches_shell_and_can_exit(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    answers = iter(["exit"])
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda *_: next(answers))
     assert main([]) == 0
-    captured = capsys.readouterr()
-    assert "Choose a mode" in captured.out
-    assert "JScope closed" in captured.out
+    assert "Type a URL or path to start" in capsys.readouterr().out
 
 
 def test_confirm_exposes_explicit_active_test_authorization():

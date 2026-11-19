@@ -56,29 +56,50 @@ Try it yourself on the bundled fixture (`tests/sample_react`).
 
 ```bash
 python -m pip install --upgrade jscope
-jscope                # opens the guided terminal wizard
+jscope https://app.example.com     # or ./path/to/project: analyze, remember, and tell you what to do next
 ```
 
-JScope starts with a hawk identity banner and a guided mode selector. **Auto mode** walks through target, assessment profile, review and execution. **Manual mode** lets you run existing JScope commands from an interactive prompt. The original direct CLI remains available:
+Python 3.10+. YAML OpenAPI specs: `pip install "jscope[yaml]"`. Development: `pip install -e ".[dev]"`; see [docs/RELEASING.md](docs/RELEASING.md).
 
-```bash
-jscope --help
-jscope doctor
-jscope analyze ./path/to/project --verbose
-jscope https://app.example.com
+## One investigation, no re-typing
+
+JScope remembers the current target, its scope host, and the latest findings in `.jscope/session.json`. After the first
+command you stop passing paths, files and URLs:
+
+```text
+$ jscope https://app.example.com
+  target : https://app.example.com
+  host   : app.example.com  (resolves to 93.184.216.34)
+12 finding(s): CONFIRMED=1, HIGH=3, MEDIUM=5, LOW=3
+next: jscope findings | jscope show 1 | jscope graph | jscope report --format html
+
+$ jscope findings --min-confidence HIGH
+  #  PRI  CONFIDENCE    STATE       CATEGORY  SUBJECT
+  1   68  CONFIRMED     static      endpoint  /api/admin/reports/export
+  2   58  HIGH          static      endpoint  /api/admin/users
+
+$ jscope show 1                      # rank, id (JS-0004) or unique text all work
+$ jscope show 1 --source             # + source lines around each evidence location
+$ jscope graph --unprotected         # routes with no guard
+$ jscope confirm --dry-run           # request plan, nothing sent (in the shell: plan, then one question)
+$ jscope verify --finding-id 1 --authorize-active-tests
+$ jscope status                      # target, scope, evidence state
 ```
 
-Python 3.10+. For YAML OpenAPI specs: `python -m pip install "jscope[yaml]"`. For development, clone the repository and install `python -m pip install -e ".[dev]"`. See [docs/RELEASING.md](docs/RELEASING.md) for GitHub and PyPI publishing.
+`jscope` with no arguments in a terminal opens a shell over the same commands: type a URL or path to start, a number to
+open that finding, or any command. The shell asks one kind of question only: before runtime traffic.
 
-## Quick start
+**What stays explicit.** Scope is the target's own host and nothing else (an explicit `--base-url` still requires
+`--allow-host`). Active requests require `--authorize-active-tests` (the shell asks instead). Loopback/private
+destinations need `--allow-private`. Non-interactive remote runs need `-y`. Runtime results are written back to the
+findings file; the static original is kept once as `findings.static.json`. `STATE` separates static observations from
+probable/confirmed behavior.
 
-```bash
-jscope analyze ./path/to/js-project --verbose      # ranking, route map, evidence appendix
-jscope explain JS-0004 --findings-file f.json      # full evidence chain for one finding
-jscope graph ./project                             # route -> component -> API -> guard map
-jscope https://app.example.com                     # crawl + download + analyze (authorized targets only)
-jscope report f.json --format html -o report.html  # re-render: human | json | markdown | html | sarif
-```
+**Scripting.** Every command also works without a session, with explicit files (`jscope show JS-0004 --findings-file f.json`).
+`--json` is available on `status`, `findings` and `show`. Exit codes: 0 ok, 1 error, 2 not found / ambiguous / partial,
+3 workspace regression. 0.5 commands, flags and output files are unchanged. Details: [docs/REDESIGN_0.6.md](docs/REDESIGN_0.6.md).
+
+Other direct commands: `jscope analyze`, `report`, `ws-scan --fail-on-regression` (CI baseline diffing), `observe`, `ai`.
 
 Remote commands (`go`, `scan`, `crawl`, `download`) are bound to the target host, rate-limited, and **refuse loopback/private
 addresses by default**. For controlled local testing pass `--allow-private`.
